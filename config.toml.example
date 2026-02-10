@@ -12,3 +12,6 @@ urgencies = []
 
 # Optional: "ack" or "resolve" (default: "ack")
 action = "ack"
+
+# Optional: process all incidents, not just those assigned to you (default: false)
+all_incidents = false

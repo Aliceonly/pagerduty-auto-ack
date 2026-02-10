@@ -16,6 +16,7 @@ DEFAULTS = {
     "interval": 60,
     "urgencies": [],
     "action": "ack",
+    "all_incidents": False,
 }
 
 
@@ -59,6 +60,13 @@ def parse_args():
         default=None,
         help="action to take on incidents (default: ack)",
     )
+    parser.add_argument(
+        "--all-incidents",
+        required=False,
+        action="store_true",
+        default=None,
+        help="process all incidents, not just those assigned to you",
+    )
 
     return parser.parse_args()
 
@@ -79,6 +87,7 @@ def resolve_config(args):
         "interval": pick(args.interval, "interval"),
         "urgencies": pick(args.urgencies, "urgencies"),
         "action": pick(args.action, "action"),
+        "all_incidents": pick(args.all_incidents, "all_incidents"),
     }
 
 
@@ -94,6 +103,7 @@ def main():
     action = cfg["action"]
     interval = cfg["interval"]
     urgencies = cfg["urgencies"]
+    all_incidents = cfg["all_incidents"]
 
     try:
         ack_incidents = []
@@ -111,12 +121,15 @@ def main():
                 action_fn = pd.acknowledge_incidents
                 action_label = "acknowledged"
 
-            logger.info(f"Running as user: {user_email} (action: {action})")
+            scope = "all incidents" if all_incidents else "my incidents"
+            logger.info(f"Running as user: {user_email} (action: {action}, scope: {scope})")
+
+            user_ids = [] if all_incidents else [user_id]
 
             while True:
                 incidents = pd.get_incidents(
                     pd_client,
-                    user_ids=[user_id],
+                    user_ids=user_ids,
                     urgencies=urgencies,
                     statuses=statuses,
                 )
