@@ -7,7 +7,11 @@ import tomllib
 
 from . import pd
 
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +147,12 @@ def main():
 
                     action_fn(pd_client, incident_ids)
 
-                    logger.info(f"Incidents {action_label}: {len(incident_ids)}")
+                    if incidents:
+                        logger.info(f"{len(incidents)} incidents {action_label}:")
+                        for inc in incidents:
+                            logger.info(f"  -> #{inc.get('incident_number')}  {inc.get('title', 'N/A')}")
+                    else:
+                        logger.info(f"No incidents to {action_label[:-1]}")
                 except Exception:
                     logger.warning("Request failed, will retry next cycle", exc_info=True)
 
@@ -152,14 +161,16 @@ def main():
 
     except KeyboardInterrupt:
         count = len(ack_incidents)
-        logger.info(f"{action_label.capitalize()} {count} incidents")
-        print(f"You can find a list of {action_label} incidents below:")
-        for incident in ack_incidents:
-            print(
-                "#{0} {1}".format(
-                    incident.get("incident_number"), incident.get("html_url")
-                )
-            )
+        logger.info(f"Shutting down. Total {action_label}: {count}")
+        if ack_incidents:
+            print(f"\n{'─' * 50}")
+            print(f"  {action_label.upper()} INCIDENTS SUMMARY")
+            print(f"{'─' * 50}")
+            for inc in ack_incidents:
+                print(f"  #{inc.get('incident_number')}  {inc.get('title', 'N/A')}")
+            print(f"{'─' * 50}")
+            print(f"  Total: {count}")
+            print(f"{'─' * 50}")
 
 
 if __name__ == "__main__":
