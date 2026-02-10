@@ -1,7 +1,9 @@
 import argparse
 import logging
 import os
+import sys
 import time
+import tomllib
 
 from . import pd
 
@@ -9,19 +11,36 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
 
 logger = logging.getLogger(__name__)
 
+DEFAULTS = {
+    "pagerduty_api_key": None,
+    "interval": 60,
+    "urgencies": [],
+    "action": "ack",
+}
+
+
+def load_config(config_path: str) -> dict:
+    with open(config_path, "rb") as f:
+        return tomllib.load(f)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="pagerduty-auto-ack",
-        description="Monitor and automatically ACKnowledge PagerDuty incidents",
+        description="Monitor and automatically ACKnowledge or resolve PagerDuty incidents",
     )
 
-    parser.add_argument("--pagerduty-api-key", required=True)
+    parser.add_argument(
+        "--config",
+        required=False,
+        help="path to TOML config file",
+    )
+    parser.add_argument("--pagerduty-api-key", required=False, default=None)
     parser.add_argument(
         "--interval",
         required=False,
         type=int,
-        default=60,
+        default=None,
         help="how often (in seconds) to run the check",
     )
     parser.add_argument(
@@ -29,18 +48,52 @@ def parse_args():
         required=False,
         choices=["high", "low"],
         action="append",
-        default=[],
+        default=None,
         dest="urgencies",
         help="defaults to all urgencies",
+    )
+    parser.add_argument(
+        "--action",
+        required=False,
+        choices=["ack", "resolve"],
+        default=None,
+        help="action to take on incidents (default: ack)",
     )
 
     return parser.parse_args()
 
 
+def resolve_config(args):
+    """Merge CLI args > config file > defaults."""
+    config = {}
+    if args.config:
+        config = load_config(args.config)
+
+    def pick(cli_val, key):
+        if cli_val is not None:
+            return cli_val
+        return config.get(key, DEFAULTS[key])
+
+    return {
+        "pagerduty_api_key": pick(args.pagerduty_api_key, "pagerduty_api_key"),
+        "interval": pick(args.interval, "interval"),
+        "urgencies": pick(args.urgencies, "urgencies"),
+        "action": pick(args.action, "action"),
+    }
+
+
 def main():
     args = parse_args()
+    cfg = resolve_config(args)
 
-    pd_api_key = args.pagerduty_api_key
+    pd_api_key = cfg["pagerduty_api_key"]
+    if not pd_api_key:
+        logger.error("--pagerduty-api-key is required (via CLI or config file)")
+        sys.exit(1)
+
+    action = cfg["action"]
+    interval = cfg["interval"]
+    urgencies = cfg["urgencies"]
 
     try:
         ack_incidents = []
@@ -49,30 +102,41 @@ def main():
             user_email = user.get("email")
             user_id = user.get("id")
 
-            logger.info(f"Running as user: {user_email}")
+            if action == "resolve":
+                statuses = ["triggered", "acknowledged"]
+                action_fn = pd.resolve_incidents
+                action_label = "resolved"
+            else:
+                statuses = ["triggered"]
+                action_fn = pd.acknowledge_incidents
+                action_label = "acknowledged"
+
+            logger.info(f"Running as user: {user_email} (action: {action})")
 
             while True:
-                incidents = pd.get_triggered_incidents(
-                    pd_client, user_ids=[user_id], urgencies=args.urgencies
+                incidents = pd.get_incidents(
+                    pd_client,
+                    user_ids=[user_id],
+                    urgencies=urgencies,
+                    statuses=statuses,
                 )
 
                 ack_incidents += incidents
 
-                # PD API supports max of 250 acks at the same time
-                # well, you shouldn't have that many anyway...
+                # PD API supports max of 250 updates at the same time
                 incidents = incidents[:250]
                 incident_ids = list(map(lambda x: x.get("id"), incidents))
 
-                pd.acknowledge_incidents(pd_client, incident_ids)
+                action_fn(pd_client, incident_ids)
 
-                logger.info(f"Incidents acknowledged: {len(incident_ids)}")
-                logger.debug(f"Sleeping for {args.interval} seconds")
-                time.sleep(args.interval)
+                logger.info(f"Incidents {action_label}: {len(incident_ids)}")
+                logger.debug(f"Sleeping for {interval} seconds")
+                time.sleep(interval)
 
     except KeyboardInterrupt:
         count = len(ack_incidents)
-        logger.info(f"Acknowledged {count} incidents")
-        print("You can find a list of acknowledged incidents below:")
+        logger.info(f"{action_label.capitalize()} {count} incidents")
+        print(f"You can find a list of {action_label} incidents below:")
         for incident in ack_incidents:
             print(
                 "#{0} {1}".format(

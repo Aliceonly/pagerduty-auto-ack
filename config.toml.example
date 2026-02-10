@@ -1,0 +1,14 @@
+# PagerDuty Auto-Ack Configuration
+# Copy this file to config.toml and fill in your values.
+
+# Required: PagerDuty user-level API key (starts with u+)
+pagerduty_api_key = "u+your_api_key_here"
+
+# Optional: check interval in seconds (default: 60)
+interval = 60
+
+# Optional: filter by urgency, e.g. ["high"] or ["high", "low"] (default: [] = all)
+urgencies = []
+
+# Optional: "ack" or "resolve" (default: "ack")
+action = "ack"

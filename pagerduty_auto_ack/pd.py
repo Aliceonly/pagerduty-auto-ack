@@ -13,7 +13,12 @@ def get_current_user(client: pdpyras.APISession):
     return client.rget("users/me")
 
 
-def get_triggered_incidents(client: pdpyras.APISession, user_ids=[], urgencies=[]):
+def get_incidents(
+    client: pdpyras.APISession,
+    user_ids=[],
+    urgencies=[],
+    statuses=["triggered"],
+):
     logger.debug("Listing incidents")
 
     return client.rget(
@@ -22,21 +27,20 @@ def get_triggered_incidents(client: pdpyras.APISession, user_ids=[], urgencies=[
             "user_ids": user_ids,
             "urgencies": urgencies,
             "total": True,
-            "statuses": ["triggered"],
+            "statuses": statuses,
             "sort_by": "incident_number:desc",
         },
     )
 
 
-def acknowledge_incidents(client: pdpyras.APISession, incident_ids=[]):
-    logger.debug("Acknowleding incidents")
+def _update_incidents(client: pdpyras.APISession, incident_ids=[], status="acknowledged"):
     if not incident_ids:
-        logger.debug("No incidents to acknowledge")
+        logger.debug("No incidents to update")
         return
 
     body = {
         "incidents": [
-            {"id": incident_id, "type": "incident_reference", "status": "acknowledged"}
+            {"id": incident_id, "type": "incident_reference", "status": status}
             for incident_id in incident_ids
         ]
     }
@@ -48,3 +52,13 @@ def acknowledge_incidents(client: pdpyras.APISession, incident_ids=[]):
         },
         json=body,
     )
+
+
+def acknowledge_incidents(client: pdpyras.APISession, incident_ids=[]):
+    logger.debug("Acknowledging incidents")
+    return _update_incidents(client, incident_ids, status="acknowledged")
+
+
+def resolve_incidents(client: pdpyras.APISession, incident_ids=[]):
+    logger.debug("Resolving incidents")
+    return _update_incidents(client, incident_ids, status="resolved")
