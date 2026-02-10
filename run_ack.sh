@@ -1,2 +1,6 @@
 #!/usr/bin/env bash
-poetry run pagerduty-auto-ack --config config.toml --action ack
+
+until poetry run pagerduty-auto-ack --config config.toml --action ack; do
+    echo "[$(date)] Process crashed (exit code: $?), restarting in 1s..."
+    sleep 1
+done

@@ -127,22 +127,26 @@ def main():
             user_ids = [] if all_incidents else [user_id]
 
             while True:
-                incidents = pd.get_incidents(
-                    pd_client,
-                    user_ids=user_ids,
-                    urgencies=urgencies,
-                    statuses=statuses,
-                )
+                try:
+                    incidents = list(pd.get_incidents(
+                        pd_client,
+                        user_ids=user_ids,
+                        urgencies=urgencies,
+                        statuses=statuses,
+                    ))
 
-                ack_incidents += incidents
+                    # PD API supports max of 250 updates at the same time
+                    incidents = incidents[:250]
+                    incident_ids = [i.get("id") for i in incidents]
 
-                # PD API supports max of 250 updates at the same time
-                incidents = incidents[:250]
-                incident_ids = list(map(lambda x: x.get("id"), incidents))
+                    ack_incidents += incidents
 
-                action_fn(pd_client, incident_ids)
+                    action_fn(pd_client, incident_ids)
 
-                logger.info(f"Incidents {action_label}: {len(incident_ids)}")
+                    logger.info(f"Incidents {action_label}: {len(incident_ids)}")
+                except Exception:
+                    logger.warning("Request failed, will retry next cycle", exc_info=True)
+
                 logger.debug(f"Sleeping for {interval} seconds")
                 time.sleep(interval)
 
