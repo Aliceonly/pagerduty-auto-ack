@@ -33,6 +33,23 @@ def get_incidents(
     )
 
 
+def is_user_oncall(client: pdpyras.APISession, user_id: str, schedule_id: str) -> bool:
+    """检查用户当前是否在指定 schedule 上值班。"""
+    logger.debug(f"Checking oncall status for user {user_id} on schedule {schedule_id}")
+    try:
+        oncalls = client.rget(
+            "oncalls",
+            params={
+                "user_ids[]": [user_id],
+                "schedule_ids[]": [schedule_id],
+            },
+        )
+        return len(list(oncalls)) > 0
+    except Exception:
+        logger.warning("Failed to check oncall status, assuming on-call", exc_info=True)
+        return True
+
+
 def _update_incidents(client: pdpyras.APISession, incident_ids=[], status="acknowledged"):
     if not incident_ids:
         logger.debug("No incidents to update")

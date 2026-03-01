@@ -21,6 +21,7 @@ DEFAULTS = {
     "urgencies": [],
     "action": "ack",
     "all_incidents": False,
+    "schedule_id": None,
 }
 
 
@@ -71,6 +72,12 @@ def parse_args():
         default=None,
         help="process all incidents, not just those assigned to you",
     )
+    parser.add_argument(
+        "--schedule-id",
+        required=False,
+        default=None,
+        help="PagerDuty schedule ID; only process incidents when you are on-call",
+    )
 
     return parser.parse_args()
 
@@ -92,6 +99,7 @@ def resolve_config(args):
         "urgencies": pick(args.urgencies, "urgencies"),
         "action": pick(args.action, "action"),
         "all_incidents": pick(args.all_incidents, "all_incidents"),
+        "schedule_id": pick(args.schedule_id, "schedule_id"),
     }
 
 
@@ -108,6 +116,7 @@ def main():
     interval = cfg["interval"]
     urgencies = cfg["urgencies"]
     all_incidents = cfg["all_incidents"]
+    schedule_id = cfg["schedule_id"]
 
     try:
         ack_incidents = []
@@ -126,12 +135,20 @@ def main():
                 action_label = "acknowledged"
 
             scope = "all incidents" if all_incidents else "my incidents"
-            logger.info(f"Running as user: {user_email} (action: {action}, scope: {scope})")
+            schedule_info = f", schedule: {schedule_id}" if schedule_id else ""
+            logger.info(f"Running as user: {user_email} (action: {action}, scope: {scope}{schedule_info})")
 
             user_ids = [] if all_incidents else [user_id]
 
             while True:
                 try:
+                    # 如果配置了 schedule_id，先检查是否在值班
+                    if schedule_id:
+                        if not pd.is_user_oncall(pd_client, user_id, schedule_id):
+                            logger.info("Not on-call, skipping")
+                            time.sleep(interval)
+                            continue
+
                     incidents = list(pd.get_incidents(
                         pd_client,
                         user_ids=user_ids,
