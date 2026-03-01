@@ -1,2 +1,4 @@
 dist
 config.toml
+credentials.json
+schedule_handler/schedule_data.json
