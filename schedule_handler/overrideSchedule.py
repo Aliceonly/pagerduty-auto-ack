@@ -174,6 +174,11 @@ def process_person_shifts(headers: dict, schedule_id: str, user_id: str,
                           shifts: list, shifts_mapping: dict):
     print(f"--- 开始批量创建覆盖 ({len(shifts)} 个班次) ---")
 
+    now_utc = datetime.now(timezone.utc)
+    skipped = 0
+    succeeded = 0
+    failed = 0
+
     for entry in shifts:
         base_date = datetime.strptime(entry["date"], "%Y-%m-%d")
         shift_info = shifts_mapping[entry["shift"]]
@@ -181,9 +186,18 @@ def process_person_shifts(headers: dict, schedule_id: str, user_id: str,
         end_time_local = parse_time(shift_info["end"])
 
         start_utc, end_utc = calculate_utc_times(base_date, start_time_local, end_time_local)
-        create_override(headers, schedule_id, user_id, start_utc, end_utc)
 
-    print("--- 批量创建完成 ---\n")
+        # 跳过已完全过去的班次，PagerDuty 不允许创建过去的 override
+        if end_utc <= now_utc:
+            skipped += 1
+            continue
+
+        if create_override(headers, schedule_id, user_id, start_utc, end_utc):
+            succeeded += 1
+        else:
+            failed += 1
+
+    print(f"--- 批量创建完成: 成功 {succeeded}, 失败 {failed}, 跳过(已过期) {skipped}, 共 {len(shifts)} ---\n")
 
 
 def main():

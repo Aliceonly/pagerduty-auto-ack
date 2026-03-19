@@ -76,7 +76,9 @@ def process_schedule(df: pd.DataFrame, target_person: str) -> Dict[str, List[dat
         for col_name in date_columns:
             base_date = parse_date(date_row[col_name])
             if base_date:
-                if base_date.date() >= TODAY_DATE:
+                # 往前多包含一天，因为 EVENING(17:30~01:30) 和 NIGHT(01:30~08:30) 班次
+                # 会跨日到下一天。例如 3/18 列的 NIGHT 班实际发生在 3/19。
+                if base_date.date() >= TODAY_DATE - timedelta(days=1):
                     dates[col_name] = base_date
 
         if not dates:
@@ -99,7 +101,10 @@ def process_schedule(df: pd.DataFrame, target_person: str) -> Dict[str, List[dat
                 if person_on_shift == target_person:
                     # NIGHT 班次 (01:30~08:30) 实际发生在列日期的下一天
                     actual_date = base_date + timedelta(days=1) if time_range_constant_name == "TIME_RANGE_NIGHT" else base_date
-                    aggregated_shifts[time_range_constant_name].append(actual_date)
+                    # 跨日班次（EVENING/NIGHT）的实际结束时间在 actual_date 当天或次日，
+                    # 只要 actual_date >= 昨天就可能包含未来时段，保留它
+                    if actual_date.date() >= TODAY_DATE - timedelta(days=1):
+                        aggregated_shifts[time_range_constant_name].append(actual_date)
 
     return aggregated_shifts
 
