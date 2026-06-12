@@ -15,3 +15,16 @@ action = "ack"
 
 # Optional: process all incidents, not just those assigned to you (default: false)
 all_incidents = false
+
+# Optional: PagerDuty schedule ID; only process incidents when you are on-call
+# schedule_id = "P..."
+
+# Optional: team IDs to skip during HKT night shift (01:30~08:30).
+# During the night shift, incidents whose teams[].id matches any of these will
+# NOT be auto-ack'd or auto-resolved — leave them for the on-call human.
+# Example: ["PXXXXXX"]  # Support Team (P0)
+night_shift_excluded_team_ids = ["P8ALLOI"]
+
+# Rate-limit cooldown is hard-coded:
+#   if more than 10 incidents are processed within a rolling 60 minutes,
+#   auto-ack/resolve pauses for 30 minutes.

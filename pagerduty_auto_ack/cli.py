@@ -4,8 +4,19 @@ import os
 import sys
 import time
 import tomllib
+from collections import deque
+from datetime import datetime, time as dtime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from . import pd
+
+HKT = ZoneInfo("Asia/Hong_Kong")
+NIGHT_SHIFT_START = dtime(1, 30)
+NIGHT_SHIFT_END = dtime(8, 30)
+
+COOLDOWN_WINDOW = timedelta(minutes=60)
+COOLDOWN_THRESHOLD = 10
+COOLDOWN_DURATION = timedelta(minutes=30)
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -22,7 +33,30 @@ DEFAULTS = {
     "action": "ack",
     "all_incidents": False,
     "schedule_id": None,
+    "night_shift_excluded_team_ids": [],
 }
+
+
+def is_night_shift_hkt(now=None) -> bool:
+    """夜班时段为 HKT 01:30~08:30（左闭右开）。"""
+    now = now or datetime.now(HKT)
+    t = now.astimezone(HKT).time()
+    return NIGHT_SHIFT_START <= t < NIGHT_SHIFT_END
+
+
+def partition_by_excluded_teams(incidents, excluded_team_ids):
+    """Split incidents into (kept, dropped) by whether they belong to an excluded team."""
+    if not excluded_team_ids:
+        return list(incidents), []
+    excluded = set(excluded_team_ids)
+    kept, dropped = [], []
+    for inc in incidents:
+        team_ids = {t.get("id") for t in inc.get("teams", []) if t.get("id")}
+        if team_ids & excluded:
+            dropped.append(inc)
+        else:
+            kept.append(inc)
+    return kept, dropped
 
 
 def load_config(config_path: str) -> dict:
@@ -100,6 +134,7 @@ def resolve_config(args):
         "action": pick(args.action, "action"),
         "all_incidents": pick(args.all_incidents, "all_incidents"),
         "schedule_id": pick(args.schedule_id, "schedule_id"),
+        "night_shift_excluded_team_ids": pick(None, "night_shift_excluded_team_ids"),
     }
 
 
@@ -117,6 +152,7 @@ def main():
     urgencies = cfg["urgencies"]
     all_incidents = cfg["all_incidents"]
     schedule_id = cfg["schedule_id"]
+    night_shift_excluded_team_ids = cfg["night_shift_excluded_team_ids"] or []
 
     try:
         ack_incidents = []
@@ -140,8 +176,28 @@ def main():
 
             user_ids = [] if all_incidents else [user_id]
 
+            processed_history: deque[datetime] = deque()
+            cooldown_until: datetime | None = None
+
             while True:
                 try:
+                    now = datetime.now(timezone.utc)
+
+                    # 清理 60 分钟窗口外的处理记录
+                    cutoff = now - COOLDOWN_WINDOW
+                    while processed_history and processed_history[0] < cutoff:
+                        processed_history.popleft()
+
+                    # 冷却期内跳过所有处理
+                    if cooldown_until and now < cooldown_until:
+                        remaining = int((cooldown_until - now).total_seconds())
+                        logger.info(f"In cooldown ({remaining}s left), skipping cycle")
+                        time.sleep(interval)
+                        continue
+                    if cooldown_until and now >= cooldown_until:
+                        logger.info("Cooldown ended, resuming")
+                        cooldown_until = None
+
                     # 如果配置了 schedule_id，先检查是否在值班
                     if schedule_id:
                         if not pd.is_user_oncall(pd_client, user_id, schedule_id):
@@ -156,6 +212,19 @@ def main():
                         statuses=statuses,
                     ))
 
+                    # 夜班时段（HKT 01:30~08:30）排除指定团队的 incidents
+                    skipped_by_team = []
+                    if night_shift_excluded_team_ids and is_night_shift_hkt(now):
+                        incidents, skipped_by_team = partition_by_excluded_teams(
+                            incidents, night_shift_excluded_team_ids
+                        )
+                        if skipped_by_team:
+                            logger.info(
+                                f"Night shift: skipping {len(skipped_by_team)} incidents from excluded teams"
+                            )
+                            for inc in skipped_by_team:
+                                logger.info(f"  -- #{inc.get('incident_number')}  {inc.get('title', 'N/A')}")
+
                     # PD API supports max of 250 updates at the same time
                     incidents = incidents[:250]
                     incident_ids = [i.get("id") for i in incidents]
@@ -168,8 +237,20 @@ def main():
                         logger.info(f"{len(incidents)} incidents {action_label}:")
                         for inc in incidents:
                             logger.info(f"  -> #{inc.get('incident_number')}  {inc.get('title', 'N/A')}")
-                    else:
+                    elif not skipped_by_team:
                         logger.info(f"No incidents to {action_label[:-1]}")
+
+                    # 记录本周期处理过的告警时间戳，并检查是否触发冷却
+                    for _ in incidents:
+                        processed_history.append(now)
+                    if len(processed_history) > COOLDOWN_THRESHOLD:
+                        cooldown_until = now + COOLDOWN_DURATION
+                        logger.warning(
+                            f"Processed {len(processed_history)} incidents in last "
+                            f"{int(COOLDOWN_WINDOW.total_seconds() // 60)}m, entering "
+                            f"{int(COOLDOWN_DURATION.total_seconds() // 60)}m cooldown"
+                        )
+                        processed_history.clear()
                 except Exception:
                     logger.warning("Request failed, will retry next cycle", exc_info=True)
 
