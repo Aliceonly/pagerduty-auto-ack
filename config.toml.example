@@ -19,11 +19,21 @@ all_incidents = false
 # Optional: PagerDuty schedule ID; only process incidents when you are on-call
 # schedule_id = "P..."
 
-# Optional: team IDs to skip during HKT night shift (01:30~08:30).
-# During the night shift, incidents whose teams[].id matches any of these will
-# NOT be auto-ack'd or auto-resolved — leave them for the on-call human.
-# Example: ["PXXXXXX"]  # Support Team (P0)
-night_shift_excluded_team_ids = ["P8ALLOI"]
+# Optional: skip selected incidents during the HKT night shift (01:30~08:30) so
+# the on-call human handles them instead of auto-ack/resolve.
+#
+# Prefer escalation_policy ids: if P0 and P1 alerts share one team, team-level
+# filtering can't tell them apart, but their escalation policies (or services) can.
+# An incident is skipped if it matches an excluded escalation policy OR team.
+#
+# Example (Orderly): exclude only P0, keep auto-processing P1:
+#   Support Team (P0) escalation policy = PNEK5IJ
+#   Support Team (P1) escalation policy = PAG1IST
+night_shift_excluded_escalation_policy_ids = ["PNEK5IJ"]
+
+# Optional (legacy): team ids to skip. Only use when a team maps cleanly to the
+# severity you want to exclude. Example: ["PXXXXXX"]
+night_shift_excluded_team_ids = []
 
 # Rate-limit cooldown is hard-coded:
 #   if more than 10 incidents are processed within a rolling 60 minutes,

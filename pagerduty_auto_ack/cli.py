@@ -34,6 +34,7 @@ DEFAULTS = {
     "all_incidents": False,
     "schedule_id": None,
     "night_shift_excluded_team_ids": [],
+    "night_shift_excluded_escalation_policy_ids": [],
 }
 
 
@@ -44,15 +45,30 @@ def is_night_shift_hkt(now=None) -> bool:
     return NIGHT_SHIFT_START <= t < NIGHT_SHIFT_END
 
 
-def partition_by_excluded_teams(incidents, excluded_team_ids):
-    """Split incidents into (kept, dropped) by whether they belong to an excluded team."""
-    if not excluded_team_ids:
+def partition_excluded_incidents(
+    incidents,
+    excluded_team_ids=(),
+    excluded_escalation_policy_ids=(),
+):
+    """Split incidents into (kept, dropped) for the night shift.
+
+    An incident is dropped if it matches an excluded team OR its escalation
+    policy is in the excluded set (OR semantics).
+
+    Prefer escalation-policy filtering: at Orderly, P0 and P1 alerts share the
+    same team (``P8ALLOI`` "Support Team") but have separate escalation policies
+    (P0 ``PNEK5IJ`` vs P1 ``PAG1IST``) and services, so only the policy/service
+    can tell P0 from P1. Team filtering is kept for backward compatibility.
+    """
+    excluded_teams = set(excluded_team_ids or [])
+    excluded_eps = set(excluded_escalation_policy_ids or [])
+    if not excluded_teams and not excluded_eps:
         return list(incidents), []
-    excluded = set(excluded_team_ids)
     kept, dropped = [], []
     for inc in incidents:
         team_ids = {t.get("id") for t in inc.get("teams", []) if t.get("id")}
-        if team_ids & excluded:
+        ep_id = (inc.get("escalation_policy") or {}).get("id")
+        if (team_ids & excluded_teams) or (ep_id and ep_id in excluded_eps):
             dropped.append(inc)
         else:
             kept.append(inc)
@@ -135,6 +151,9 @@ def resolve_config(args):
         "all_incidents": pick(args.all_incidents, "all_incidents"),
         "schedule_id": pick(args.schedule_id, "schedule_id"),
         "night_shift_excluded_team_ids": pick(None, "night_shift_excluded_team_ids"),
+        "night_shift_excluded_escalation_policy_ids": pick(
+            None, "night_shift_excluded_escalation_policy_ids"
+        ),
     }
 
 
@@ -153,6 +172,9 @@ def main():
     all_incidents = cfg["all_incidents"]
     schedule_id = cfg["schedule_id"]
     night_shift_excluded_team_ids = cfg["night_shift_excluded_team_ids"] or []
+    night_shift_excluded_escalation_policy_ids = (
+        cfg["night_shift_excluded_escalation_policy_ids"] or []
+    )
 
     try:
         ack_incidents = []
@@ -212,15 +234,21 @@ def main():
                         statuses=statuses,
                     ))
 
-                    # 夜班时段（HKT 01:30~08:30）排除指定团队的 incidents
+                    # 夜班时段（HKT 01:30~08:30）排除指定 escalation policy / 团队的 incidents
                     skipped_by_team = []
-                    if night_shift_excluded_team_ids and is_night_shift_hkt(now):
-                        incidents, skipped_by_team = partition_by_excluded_teams(
-                            incidents, night_shift_excluded_team_ids
+                    has_night_exclusions = (
+                        night_shift_excluded_escalation_policy_ids
+                        or night_shift_excluded_team_ids
+                    )
+                    if has_night_exclusions and is_night_shift_hkt(now):
+                        incidents, skipped_by_team = partition_excluded_incidents(
+                            incidents,
+                            excluded_team_ids=night_shift_excluded_team_ids,
+                            excluded_escalation_policy_ids=night_shift_excluded_escalation_policy_ids,
                         )
                         if skipped_by_team:
                             logger.info(
-                                f"Night shift: skipping {len(skipped_by_team)} incidents from excluded teams"
+                                f"Night shift: skipping {len(skipped_by_team)} excluded incidents"
                             )
                             for inc in skipped_by_team:
                                 logger.info(f"  -- #{inc.get('incident_number')}  {inc.get('title', 'N/A')}")
