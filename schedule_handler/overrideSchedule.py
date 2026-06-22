@@ -95,13 +95,24 @@ def delete_single_override(headers: dict, schedule_id: str, override_id: str) ->
     return False
 
 
-def delete_all_future_overrides(headers: dict, schedule_id: str, lookahead_days=365):
+def delete_all_future_overrides(headers: dict, schedule_id: str,
+                                since_utc: Optional[datetime] = None,
+                                until_utc: Optional[datetime] = None,
+                                lookahead_days=365):
+    """删除指定窗口内的可编辑 override。
+
+    删除窗口下界取“数据最早开始时间”与 now 的较大者（PagerDuty 不处理过去），
+    上界取“数据最晚结束时间”。未提供 since/until 时回退到旧行为
+    （now ~ now+lookahead_days 天），但调用方应始终传入数据窗口，
+    否则会误删窗口外（例如当前月剩余）的 override。
+    """
     now_utc = datetime.now(timezone.utc)
-    future_utc = now_utc + timedelta(days=lookahead_days)
+    start_bound = max(since_utc, now_utc) if since_utc else now_utc
+    end_bound = until_utc if until_utc else now_utc + timedelta(days=lookahead_days)
 
     params = {
-        "since": now_utc.isoformat().replace('+00:00', 'Z'),
-        "until": future_utc.isoformat().replace('+00:00', 'Z'),
+        "since": start_bound.isoformat().replace('+00:00', 'Z'),
+        "until": end_bound.isoformat().replace('+00:00', 'Z'),
         "editable": "true",
     }
 
@@ -183,6 +194,30 @@ def calculate_utc_times(base_date: datetime, start_time_local: time, end_time_lo
     return start_datetime_local.astimezone(timezone.utc), end_datetime_local.astimezone(timezone.utc)
 
 
+def compute_override_window(schedule_data: dict, shifts_mapping: dict):
+    """计算本次排班数据覆盖的 UTC 时间窗口 [最早开始, 最晚结束]。
+
+    用于把删除范围收紧到本次数据实际覆盖的区间，避免误删窗口外
+    （例如六月里配置七月排班时，六月剩余）的 override。
+    无任何班次时返回 (None, None)。
+    """
+    starts = []
+    ends = []
+    for shifts in schedule_data.values():
+        for entry in shifts:
+            base_date = datetime.strptime(entry["date"], "%Y-%m-%d")
+            shift_info = shifts_mapping[entry["shift"]]
+            start_utc, end_utc = calculate_utc_times(
+                base_date, parse_time(shift_info["start"]), parse_time(shift_info["end"])
+            )
+            starts.append(start_utc)
+            ends.append(end_utc)
+
+    if not starts:
+        return None, None
+    return min(starts), max(ends)
+
+
 def process_person_shifts(headers: dict, schedule_id: str, user_id: str,
                           shifts: list, shifts_mapping: dict):
     print(f"--- 开始批量创建覆盖 ({len(shifts)} 个班次) ---")
@@ -223,10 +258,20 @@ def main():
     schedule_data = load_schedule_data()
     shifts_mapping = schedule_data.pop("_shifts_mapping")
 
-    # 先清除所有未来的 override，再重新创建
+    # 计算本次数据覆盖的时间窗口，删除范围只收紧到该窗口，
+    # 避免六月里配置七月排班时把六月剩余的 override 一并删掉。
+    window_start, window_end = compute_override_window(schedule_data, shifts_mapping)
+
+    # 先清除窗口内现有的 override，再重新创建
     print("=== 第 1 步：清除现有的未来 override ===")
-    if not delete_all_future_overrides(headers, schedule_id):
-        raise RuntimeError("Step1 失败：清除未来 override 未完成。")
+    if window_start is None:
+        print("排班数据为空，跳过删除。")
+    else:
+        print(f"删除窗口: {window_start.isoformat()} ~ {window_end.isoformat()}")
+        if not delete_all_future_overrides(
+            headers, schedule_id, since_utc=window_start, until_utc=window_end
+        ):
+            raise RuntimeError("Step1 失败：清除未来 override 未完成。")
 
     # 查找所有人的用户 ID
     print("\n=== 第 2 步：查找 PagerDuty 用户 ID ===")

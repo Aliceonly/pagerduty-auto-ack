@@ -4,7 +4,13 @@ from unittest.mock import Mock, call, patch
 
 import requests
 
-from schedule_handler.overrideSchedule import create_override, lookup_user_id, main
+from schedule_handler.overrideSchedule import (
+    compute_override_window,
+    create_override,
+    delete_all_future_overrides,
+    lookup_user_id,
+    main,
+)
 
 
 class TestCreateOverrideRetry(unittest.TestCase):
@@ -180,6 +186,78 @@ class TestMainFlowControl(unittest.TestCase):
             main()
 
         process_person_shifts_mock.assert_not_called()
+
+
+class TestDeleteWindowScoping(unittest.TestCase):
+    """六月里配置七月排班时，删除窗口必须只覆盖七月，不能误删六月剩余。"""
+
+    SHIFTS_MAPPING = {
+        "TIME_RANGE_PRIMARY": {"start": "08:30", "end": "17:30"},
+        "TIME_RANGE_EVENING": {"start": "17:30", "end": "01:30"},
+        "TIME_RANGE_NIGHT": {"start": "01:30", "end": "08:30"},
+    }
+
+    def test_compute_override_window_spans_min_start_to_max_end(self):
+        schedule_data = {
+            "Alice": [{"date": "2026-07-01", "shift": "TIME_RANGE_PRIMARY"}],
+            "Bob": [
+                {"date": "2026-07-15", "shift": "TIME_RANGE_EVENING"},
+                {"date": "2026-07-31", "shift": "TIME_RANGE_NIGHT"},
+            ],
+        }
+        start, end = compute_override_window(schedule_data, self.SHIFTS_MAPPING)
+        # 07-01 08:30 HKT == 07-01 00:30 UTC
+        self.assertEqual(start, datetime(2026, 7, 1, 0, 30, tzinfo=timezone.utc))
+        # 07-31 NIGHT 01:30~08:30 HKT == 07-30 17:30 ~ 07-31 00:30 UTC
+        self.assertEqual(end, datetime(2026, 7, 31, 0, 30, tzinfo=timezone.utc))
+
+    def test_compute_override_window_empty_returns_none(self):
+        self.assertEqual(compute_override_window({}, self.SHIFTS_MAPPING), (None, None))
+
+    @patch("schedule_handler.overrideSchedule.request_with_retry")
+    @patch("schedule_handler.overrideSchedule.datetime")
+    def test_delete_uses_data_start_when_future_preserving_current_month(
+        self, dt_mock, req_mock
+    ):
+        # 现在是 6/22，数据窗口是七月 -> since 必须是七月，六月不受影响
+        dt_mock.now.return_value = datetime(2026, 6, 22, tzinfo=timezone.utc)
+        resp = Mock()
+        resp.json.return_value = {"overrides": []}
+        req_mock.return_value = resp
+
+        ok = delete_all_future_overrides(
+            {"Authorization": "Token token=k"},
+            "S1",
+            since_utc=datetime(2026, 7, 1, 0, 30, tzinfo=timezone.utc),
+            until_utc=datetime(2026, 7, 31, 0, 30, tzinfo=timezone.utc),
+        )
+
+        self.assertTrue(ok)
+        params = req_mock.call_args.kwargs["params"]
+        self.assertEqual(params["since"], "2026-07-01T00:30:00Z")
+        self.assertEqual(params["until"], "2026-07-31T00:30:00Z")
+
+    @patch("schedule_handler.overrideSchedule.request_with_retry")
+    @patch("schedule_handler.overrideSchedule.datetime")
+    def test_delete_clamps_since_to_now_when_window_starts_in_past(
+        self, dt_mock, req_mock
+    ):
+        # 当月重跑：数据从月初(已部分过去)开始，since 收敛到 now
+        dt_mock.now.return_value = datetime(2026, 6, 22, tzinfo=timezone.utc)
+        resp = Mock()
+        resp.json.return_value = {"overrides": []}
+        req_mock.return_value = resp
+
+        delete_all_future_overrides(
+            {"Authorization": "Token token=k"},
+            "S1",
+            since_utc=datetime(2026, 6, 1, 0, 30, tzinfo=timezone.utc),
+            until_utc=datetime(2026, 6, 30, 0, 30, tzinfo=timezone.utc),
+        )
+
+        params = req_mock.call_args.kwargs["params"]
+        self.assertEqual(params["since"], "2026-06-22T00:00:00Z")
+        self.assertEqual(params["until"], "2026-06-30T00:30:00Z")
 
 
 if __name__ == "__main__":
