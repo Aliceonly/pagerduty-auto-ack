@@ -9,7 +9,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 SERVICE_ACCOUNT_KEY_FILE = "credentials.json"
 GOOGLE_SHEET_ID = '1E91raFGsy9OfZP5J_fd0GnHQw3cKjjo8ZSpdII0zfzQ'
 # change month here
-SHEET_NAME = 'Orderly July 2026'
+SHEET_NAME = 'Orderly Aug 2026'
 TODAY_DATE = date.today()
 TARGET_PERSON_LIST = ['allen', 'Emma', 'Abel', 'Jacob']
 YEAR = 2026
